@@ -5,7 +5,7 @@
 - ключевых доменных правил (раздел "Ключевые Правила");
 - уже готовых wireframe'ов (F2), которые служат эталонным **success state**.
 
-> Примечание по скоупу: `Decision.status = superseded` в domain model существует, но относится к Post-MVP follow-up-циклу (пересмотр решений после новой информации) и не входит в задачи F1–F4. Поэтому он не включён ни в один state ниже — это осознанное ограничение скоупа, а не пропуск.
+> Примечание по скоупу: `Decision.status = superseded` присутствует в domain model, но не проработан ни в одном state ниже. Это **out of scope для текущих wireframe'ов F1–F4** и **requires clarification**: нужно ли и как отражать этот статус в MVP UI, предстоит уточнить отдельно — соответствующего архитектурного решения на этот счёт пока нет.
 
 ---
 
@@ -35,7 +35,11 @@
 **Основано на:** `ResearchTask`, `Source`, `ResearchRun`, `EvidenceItem`, `Claim`.
 
 - **Empty:**
-  Секция **Sources** пуста — ни один source ещё не добавлен. Кнопка **Run Research** заблокирована или сопровождается подсказкой "Add at least one source to run research", поскольку запуск research run без источников бессмысленно для домена. Секции Evidence / Claims / Summary также пусты.
+  Секция **Sources** пуста — ни один source ещё не добавлен. Поведение кнопки **Run Research** зависит от `ResearchRun.mode`:
+  - для `mode = manual_sources` (единственный режим, доступный в MVP) кнопка заблокирована или сопровождается подсказкой "Add at least one source to run research" — запуск без источников не имеет смысла для этого режима;
+  - для `mode = search_assisted` отсутствие заранее добавленных sources потенциально нормально — источники могут появиться как результат самого research workflow. Это не входит в MVP-скоуп F1–F4 и оставлено как **open question**: точное поведение empty state для этого режима зависит от будущего backend/API контракта и должно быть уточнено отдельно, а не зафиксировано здесь как domain rule.
+
+  Секции Evidence / Claims / Summary также пусты (в рамках текущего MVP-скоупа, где активен только `manual_sources`).
 
 - **Loading:**
   `ResearchRun.status = queued` или `running`. Блок **Research Run** показывает соответствующий бейдж ("Queued" / "Running"), секции Evidence и Claims показывают заглушку "Waiting for run to complete" вместо карточек.
@@ -69,7 +73,9 @@
   Текущий wireframe (экран 3) — Source и Evidence Item полностью заполнены: excerpt, Confidence, Location, Note присутствуют в карточке Evidence Item, действия Approve/Reject/Edit доступны.
 
 - **Draft/review:**
-  Само наличие кнопок **Approve / Reject / Edit** говорит о том, что evidence item по умолчанию находится в непроверенном состоянии — это review-состояние: данные извлечены агентом, но ещё не подтверждены человеком (домен-принцип: "только проверенные человеком evidence... становятся знанием команды").
+  На уровне UX наличие кнопок **Approve / Reject / Edit** отражает продуктовый принцип "только проверенные человеком evidence... становятся знанием команды" — evidence item, извлечённый агентом, должен быть явно подтверждён человеком, прежде чем на него можно полагаться.
+
+  **Open contract question:** в текущей `04-domain-model.md` у `EvidenceItem` нет явно определённого review-состояния (аналога `Claim.status`) и нет audit-полей вроде `reviewed_by` / `reviewed_at`, через которые результат Approve/Reject мог бы сохраняться и отображаться. Этот UI State Map не вводит такое состояние или поля самостоятельно — фиксируем это как зависимость от будущего backend/API контракта, которую нужно уточнить до реализации review-flow для Evidence.
 
 ---
 
@@ -111,7 +117,8 @@
   Текущий wireframe (экран 5) — `Decision.status = proposed`, Linked Claims заполнены (Supported / Supported / Weak), Confidence и Open Questions присутствуют, действия Accept/Send to Review/Reject доступны.
 
 - **Draft/review:**
-  `Decision.status = needs_review` — кнопка **Accept** недоступна или сопровождается явным пояснением "Accepted decisions require reviewed claims unless a human override is explicit" (текст уже присутствует под кнопками на макете), пока среди Linked Claims остаётся хотя бы один в статусе `draft`.
+  `Decision.status = needs_review` — кнопка **Accept** недоступна или сопровождается пояснением о том, что accepted decision требует reviewed claims, кроме явного human override (домен: `04-domain-model.md`). Пример на макете показывает Linked Claims, среди которых есть claim в статусе `draft`.
+  **Open question:** точный критерий "reviewed claims" — достаточно ли хотя бы одного non-draft claim среди Linked Claims, или требуется, чтобы review прошли все Linked Claims — в domain model не зафиксирован явно. До уточнения backend/API контракта это открытый вопрос, а не решённое правило.
 
 ---
 
@@ -153,4 +160,4 @@
 | Правило "Accepted decision требует reviewed claims" | Экран 5, draft/review state |
 | Use case "задать вопрос по workspace" | Экран 6, все состояния |
 
-`Decision.status = superseded` сознательно не включён (вне скоупа MVP-задач F1–F4, относится к Post-MVP follow-up-циклу).
+`Decision.status = superseded` сознательно не проработан ни в одном state — out of scope для текущих wireframe'ов F1–F4 / requires clarification.
