@@ -2,12 +2,12 @@
 
 ## Слои
  1. domain/ (laws layer)
-    - В файлах этой папки описаны файлы с правилами работы других файлов (в последующих папках). Например: claim нельзя пометить подтверждённым, если у него нет ни одного источника. Это правило истинно всегда и неважно, хранятся ли данные в Postgres или в файле на диске.
+    - domain/ содержит business entities, инварианты и domain rules, которые не зависят от http, бд, queue и инфраструктуры. Например: claim нельзя пометить подтверждённым, если у него нет ни одного источника. Это правило истинно всегда и неважно, хранятся ли данные в Postgres или в файле на диске.
  2. services/ (application layer)
     - Координирует сценарии использования (use cases): в каком порядке вызывать правила (из domain), обращаться к базе данных, публиковать сообщения в очередь. Три основные подгруппы:
         - use-case сервисы (auth_service, prediction_submission_service) описывают весь сценарий от начала до конца.
         - mappers (ИЗ файла mappers.py) представляет классы (например, User) в 3 разных видах (формах), в зависимости от того, в каком слое кода мы сейчас находимся.
-        - reconciler (remote_job_reconciler.py) правила процессов для проверки статуса "долгих" задач (на которые требуется большое кол. времени). Условно ResearchRun(status=queued) и после сразу модель сразу отвечает.
+        - reconciler периодически опрашивает записи со статусом pending. Если в ответе результат готов, то сохраняет результат и переводит задачу в succeedd/failed, иначе оставляем pending. Для нашего проекта ResearchRun переходит queued -> running -> состояние процесса
  3. api/ (http layer)
     - Принимает HTTP-запрос, вызывает нужный use case из services/, оформляет ответ в JSON. Так же есть поддержка ошибок, например, InsufficientBalanceError.
  4. db/ (database layer)
@@ -81,7 +81,7 @@ errors: 422 validation (пустой title)
   
 **Получить список workspaces**  
 GET /workspaces  
-response: { id, title, description, owner_id, created_at }  
+response: [{ id, title, description, owner_id, created_at }]
 errors: 401 unauthenticated  
   
 **Получить один workspace**  
@@ -105,7 +105,7 @@ errors: 404 workspace not found, 422 validation
   
 **Список research tasks в workspace**  
 GET /workspaces/{workspace_id}/research-tasks?status=  
-response: { id, title, status, summary, created_at }  
+response: [{ id, title, status, summary, created_at }]
 errors: 404 workspace not found  
   
 **Получить одну research task**  
@@ -135,7 +135,7 @@ errors: 404 task not found, 422 некорректный url, 502 не удал�
   
 **Список sources в task**  
 GET /research-tasks/{task_id}/sources  
-response: { id, type, title, url, summary, reliability_note }  
+response: [{ id, type, title, url, summary, reliability_note }]  
 errors: 404  
   
 **Получить один source**  
@@ -153,7 +153,7 @@ errors: 404 source not found, 422 validation (пустой excerpt)
   
 **Список evidence по source**  
 GET /sources/{source_id}/evidence  
-response: { id, excerpt, location, confidence, created_at }  
+response: [{ id, excerpt, location, confidence, created_at }]  
 errors: 404 source not found  
   
 **Получить одно evidence**  
@@ -170,24 +170,24 @@ response: { id, workspace_id, research_task_id, text, status: "draft", confidenc
 errors: 404 task not found, 422 validation (пустой text)  
   
 **Список claims по research task**  
-GET /research-tasks/{task_id}/claims?status=и тут что-то из статуса  
-response: { id, text, status, confidence, evidence_count }  
+GET /research-tasks/{task_id}/claims?status=(draft, supported, weak, conflicting, outdated)
+response: [{ id, text, status, confidence, evidence_count }]  
 errors: 404 task not found  
   
 **Получить один claim (с evidence)**  
 GET /claims/{claim_id}  
-response: { id, text, status, confidence, reviewed_by, evidence: { id, excerpt, source_title }, created_at, updated_at }  
+response: { id, text, status, confidence, reviewed_by, evidence: [{ id, excerpt, source_title }], created_at, updated_at }  
 errors: 404 not found  
   
 **Связать claim с evidence**  
 POST /claims/{claim_id}/evidence  
 body: { evidence_id: string }  
 response: { claim_id, evidence_id, created_at }  
-errors: 404 claim or evidence not found, 409 уже связаны  
+errors: 404 claim or evidence not found, 409 уже связаны, 422 evidence принадлежит другому research task/workspace
   
 **Изменить статус claim (review)**  
 PATCH /claims/{claim_id}  
-body: { status: string, reviewed_by: string }  
+body: { status: string }  
 response: { id, status, reviewed_by, updated_at }  
 errors: 404 not found, 409 нельзя перевести в supported без evidence, 422 недопустимый переход статуса  
   
@@ -195,23 +195,23 @@ errors: 404 not found, 409 нельзя перевести в supported без e
   
 **Создать decision**  
 POST /workspaces/{workspace_id}/decisions  
-body: { title: string, decision_text: string, rationale?: string, claim_ids: string[] }  
+body: { title: string, decision_text: string, rationale?: string, claim_ids?: string[] }  
 response: { id, workspace_id, title, decision_text, status: "proposed", rationale, decided_by, created_at }  
 errors: 404 workspace not found, 422 validation (нет ни одного claim_id)  
   
 **Список decisions в workspace**  
 GET /workspaces/{workspace_id}/decisions?status=  
-response: { id, title, status, decided_at, claims_count }  
+response: [{ id, title, status, decided_at, claims_count }]  
 errors: 404 workspace not found  
   
 **Получить одно decision (с claims)**  
 GET /decisions/{decision_id}  
-response: { id, title, decision_text, status, rationale, decided_by, decided_at, claims: { id, text, status }, created_at, updated_at }  
+response: { id, title, decision_text, status, rationale, decided_by, decided_at, claims: [{ id, text, status }], created_at, updated_at }  
 errors: 404 not found  
   
 **Принять/изменить статус decision**  
 PATCH /decisions/{decision_id}  
-body: { status: string, decided_by: string, override_reason?: string }  
+body: { status: string, override_reason?: string }  
 response: { id, status, decided_by, decided_at, updated_at }  
 errors: 404 not found, 409 нельзя accepted без хотя бы одного reviewed claim (если нет override_reason), 422 недопустимый переход статуса  
   
@@ -225,12 +225,12 @@ errors: 404
 **Запустить research run**  
 POST /research-tasks/{task_id}/research-runs  
 body: { question: string, mode: string }  
-response: { id, workspace_id, research_task_id, question, status: "queued", mode, started_by, created_at }  
+response: { id, workspace_id, research_task_id, question, status: "queued", mode, started_by, started_at }  
 errors: 404 task not found, 422 validation (неверный mode), 429 слишком много активных runs  
   
 **Список research runs по task**  
 GET /research-tasks/{task_id}/research-runs  
-response: { id, status, mode, started_at, completed_at }  
+response: [{ id, status, mode, started_at, completed_at }]  
 errors: 404 task not found  
   
 **Получить статус run**  
@@ -247,12 +247,12 @@ errors: 404 not found, 409 run уже завершён/нельзя отмени
 1. Claim может в статус supported если:
    1. у claim есть хотя бы одна связанная evidence
    2. claim прошёл проверку человеком (review)
-2. Decision можетстать accepted при одном из двух:
-   1. decision связано хотя бы с одним claim
-   2. хотя бы один из этих claims имеет статус, отличный от draft
+2. Decision может стать accepted по одному из двух сценариев:
+   1. decision связано хотя бы с одним claim, который был проверен человеком (reviewed claim)
+   2. human override: человек принимает decision вручную, без reviewed claims
 3. Что происходит, когда claim становится outdated
    1. сам claim переходит в статус outdated
-   2. все decisions, которые ссылались на этот claim, тоде помечаются на пересмотр
+   2. все decisions, которые ссылались на этот claim, тоже помечаются на пересмотр (candidates for review) т.е это сигнал для команды, что решение стоит перепроверить, а не обязательно автоматическая смена статуса decision на needs_review
    3. создаётся соответствующая запись в таблице апдейтов, чтобы сохранить историю
 4. Что означает agent-generated draft:
-   1. это данные, которые сгенерировала нейросеть, но которые не были проверенны человеком. Они не сохраняются в "память" до проверки человеком.
+   1. это данные (sources, evidence, claims), которые backend получает от agent-service как draft-results. Backend сохраняет их со статусом draft/unreviewed, после чего ResearchRun переходит в review_required. draft данные хранятся в системе, но не считаются подтверждённым знанием команды (accepted knowledge) до прохождения review человеком.
