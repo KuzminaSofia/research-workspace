@@ -162,7 +162,8 @@ response: {id, source_id, excerpt, location, note, confidence, created_at }
 errors: 404   
   
 ### Claims  
-  
+**status:** draft | supported | weak | conflicting | outdated  
+
 **Создать claim**  
 POST /research-tasks/{task_id}/claims  
 body: { text: string }  
@@ -170,8 +171,7 @@ response: { id, workspace_id, research_task_id, text, status: "draft", confidenc
 errors: 404 task not found, 422 validation (пустой text)  
   
 **Список claims по research task**  
-GET /research-tasks/{task_id}/claims?status=(draft, supported, weak, conflicting, outdated)
-response: [{ id, text, status, confidence, evidence_count }]  
+GET /research-tasks/{task_id}/claims?status={status}response: [{ id, text, status, confidence, evidence_count }]  
 errors: 404 task not found  
   
 **Получить один claim (с evidence)**  
@@ -197,7 +197,7 @@ errors: 404 not found, 409 нельзя перевести в supported без e
 POST /workspaces/{workspace_id}/decisions  
 body: { title: string, decision_text: string, rationale?: string, claim_ids?: string[] }  
 response: { id, workspace_id, title, decision_text, status: "proposed", rationale, decided_by, created_at }  
-errors: 404 workspace not found, 422 validation (нет ни одного claim_id)  
+errors: 404 workspace not found, 422 один из claim_ids принадлежит другому workspace  
   
 **Список decisions в workspace**  
 GET /workspaces/{workspace_id}/decisions?status=  
