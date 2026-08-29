@@ -2,12 +2,12 @@
 
 ## Слои
  1. domain/ (laws layer)
-    - domain/ содержит business entities, инварианты и domain rules, которые не зависят от http, бд, queue и инфраструктуры. Например: claim нельзя пометить подтверждённым, если у него нет ни одного источника. Это правило истинно всегда и неважно, хранятся ли данные в Postgres или в файле на диске.
+    - domain/ содержит business entities, инварианты и domain rules и policies, которые не зависят от http, бд, queue и инфраструктуры. Например: claim нельзя пометить подтверждённым, если у него нет ни одного источника. Это правило истинно всегда и неважно, хранятся ли данные в Postgres или в файле на диске.
  2. services/ (application layer)
     - Координирует сценарии использования (use cases): в каком порядке вызывать правила (из domain), обращаться к базе данных, публиковать сообщения в очередь. Три основные подгруппы:
         - use-case сервисы (auth_service, prediction_submission_service) описывают весь сценарий от начала до конца.
         - mappers (ИЗ файла mappers.py) представляет классы (например, User) в 3 разных видах (формах), в зависимости от того, в каком слое кода мы сейчас находимся.
-        - reconciler периодически опрашивает записи со статусом pending. Если в ответе результат готов, то сохраняет результат и переводит задачу в succeedd/failed, иначе оставляем pending. Для нашего проекта ResearchRun переходит queued -> running -> состояние процесса
+        - reconciler периодически опрашивает записи со статусом pending из таблицы remote job flow. Если в ответе результат готов, то сохраняет результат и переводит задачу в succeedd/failed, иначе оставляем pending. Завершённой задачей считается момент, когда статус job перешёл в succeeded или failed. Для нашего проекта ResearchRun переходит queued -> running -> состояние процесса
  3. api/ (http layer)
     - Принимает HTTP-запрос, вызывает нужный use case из services/, оформляет ответ в JSON. Так же есть поддержка ошибок, например, InsufficientBalanceError.
  4. db/ (database layer)
@@ -81,7 +81,7 @@ errors: 422 validation (пустой title)
   
 **Получить список workspaces**  
 GET /workspaces  
-response: [{ id, title, description, owner_id, created_at }]
+response: { items: [{ id, title, description, owner_id, created_at }]}
 errors: 401 unauthenticated  
   
 **Получить один workspace**  
@@ -105,7 +105,7 @@ errors: 404 workspace not found, 422 validation
   
 **Список research tasks в workspace**  
 GET /workspaces/{workspace_id}/research-tasks?status=  
-response: [{ id, title, status, summary, created_at }]
+response: { items: [{ id, title, status, summary, created_at }]}
 errors: 404 workspace not found  
   
 **Получить одну research task**  
@@ -135,7 +135,7 @@ errors: 404 task not found, 422 некорректный url, 502 не удал�
   
 **Список sources в task**  
 GET /research-tasks/{task_id}/sources  
-response: [{ id, type, title, url, summary, reliability_note }]  
+response: { items: [{ id, type, title, url, summary, reliability_note }]}  
 errors: 404  
   
 **Получить один source**  
@@ -153,7 +153,7 @@ errors: 404 source not found, 422 validation (пустой excerpt)
   
 **Список evidence по source**  
 GET /sources/{source_id}/evidence  
-response: [{ id, excerpt, location, confidence, created_at }]  
+response: { items: [{ id, excerpt, location, confidence, created_at }]}  
 errors: 404 source not found  
   
 **Получить одно evidence**  
@@ -171,7 +171,8 @@ response: { id, workspace_id, research_task_id, text, status: "draft", confidenc
 errors: 404 task not found, 422 validation (пустой text)  
   
 **Список claims по research task**  
-GET /research-tasks/{task_id}/claims?status={status}response: [{ id, text, status, confidence, evidence_count }]  
+GET /research-tasks/{task_id}/claims?status={status} 
+response: { items: [{ id, text, status, confidence, evidence_count }]}  
 errors: 404 task not found  
   
 **Получить один claim (с evidence)**  
@@ -201,7 +202,7 @@ errors: 404 workspace not found, 422 один из claim_ids принадлеж�
   
 **Список decisions в workspace**  
 GET /workspaces/{workspace_id}/decisions?status=  
-response: [{ id, title, status, decided_at, claims_count }]  
+response: { items: [{ id, title, status, decided_at, claims_count }]}  
 errors: 404 workspace not found  
   
 **Получить одно decision (с claims)**  
@@ -230,7 +231,7 @@ errors: 404 task not found, 422 validation (неверный mode), 429 слиш
   
 **Список research runs по task**  
 GET /research-tasks/{task_id}/research-runs  
-response: [{ id, status, mode, started_at, completed_at }]  
+response: { items: [{ id, status, mode, started_at, completed_at }]}  
 errors: 404 task not found  
   
 **Получить статус run**  
