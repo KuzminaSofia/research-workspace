@@ -95,11 +95,11 @@ body: {title: string, description?: string}
 response: { id, title, description, updated_at }  
 errors: 404 not found, 422 validation  
   
-**Задать вопрос по workspace** 
-POST /workspaces/{workspace_id}/ask
-body: { question: string }
-response: { answer_text, sources_count, claims_count, decisions_count, memory_sufficient, evidence_link, claims_link, sources_link }
-errors: 404 workspace not found, 502 memory unavailable
+**Задать вопрос по workspace**  
+POST /workspaces/{workspace_id}/ask  
+body: { question: string }  
+response: { answer_text, sources_count, claims_count, decisions_count, memory_sufficient, evidence_link, claims_link, sources_link }  
+errors: 404 workspace not found, 502 memory unavailable  
 
 ### Research Tasks  
   
