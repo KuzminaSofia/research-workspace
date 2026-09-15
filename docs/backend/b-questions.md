@@ -2,12 +2,12 @@
 
 ## Слои
  1. domain/ (laws layer)
-    - domain/ содержит business entities, инварианты и domain rules, которые не зависят от http, бд, queue и инфраструктуры. Например: claim нельзя пометить подтверждённым, если у него нет ни одного источника. Это правило истинно всегда и неважно, хранятся ли данные в Postgres или в файле на диске.
+    - domain/ содержит business entities, инварианты и domain rules и policies, которые не зависят от http, бд, queue и инфраструктуры. Например: claim нельзя пометить подтверждённым, если у него нет ни одного источника. Это правило истинно всегда и неважно, хранятся ли данные в Postgres или в файле на диске.
  2. services/ (application layer)
     - Координирует сценарии использования (use cases): в каком порядке вызывать правила (из domain), обращаться к базе данных, публиковать сообщения в очередь. Три основные подгруппы:
         - use-case сервисы (auth_service, prediction_submission_service) описывают весь сценарий от начала до конца.
         - mappers (ИЗ файла mappers.py) представляет классы (например, User) в 3 разных видах (формах), в зависимости от того, в каком слое кода мы сейчас находимся.
-        - reconciler периодически опрашивает записи со статусом pending. Если в ответе результат готов, то сохраняет результат и переводит задачу в succeedd/failed, иначе оставляем pending. Для нашего проекта ResearchRun переходит queued -> running -> состояние процесса
+        - reconciler периодически опрашивает записи со статусом pending из таблицы remote job flow. Если в ответе результат готов, то сохраняет результат и переводит задачу в succeedd/failed, иначе оставляем pending. Завершённой задачей считается момент, когда статус job перешёл в succeeded или failed. Для нашего проекта ResearchRun переходит queued -> running -> состояние процесса
  3. api/ (http layer)
     - Принимает HTTP-запрос, вызывает нужный use case из services/, оформляет ответ в JSON. Так же есть поддержка ошибок, например, InsufficientBalanceError.
  4. db/ (database layer)
@@ -81,7 +81,7 @@ errors: 422 validation (пустой title)
   
 **Получить список workspaces**  
 GET /workspaces  
-response: [{ id, title, description, owner_id, created_at }]
+response: { items: [{ id, title, description, owner_id, created_at }]}
 errors: 401 unauthenticated  
   
 **Получить один workspace**  
@@ -95,6 +95,12 @@ body: {title: string, description?: string}
 response: { id, title, description, updated_at }  
 errors: 404 not found, 422 validation  
   
+**Задать вопрос по workspace**  
+POST /workspaces/{workspace_id}/ask  
+body: { question: string }  
+response: { answer_text, sources_count, claims_count, decisions_count, memory_sufficient, evidence_link, claims_link, sources_link }  
+errors: 404 workspace not found, 502 memory unavailable  
+
 ### Research Tasks  
   
 **Создать research task**  
@@ -105,7 +111,7 @@ errors: 404 workspace not found, 422 validation
   
 **Список research tasks в workspace**  
 GET /workspaces/{workspace_id}/research-tasks?status=  
-response: [{ id, title, status, summary, created_at }]
+response: { items: [{ id, title, status, summary, created_at }]}
 errors: 404 workspace not found  
   
 **Получить одну research task**  
@@ -135,7 +141,7 @@ errors: 404 task not found, 422 некорректный url, 502 не удал�
   
 **Список sources в task**  
 GET /research-tasks/{task_id}/sources  
-response: [{ id, type, title, url, summary, reliability_note }]  
+response: { items: [{ id, type, title, url, summary, reliability_note }]}  
 errors: 404  
   
 **Получить один source**  
@@ -148,19 +154,25 @@ errors: 404
 **Добавить evidence к source**  
 POST /sources/{source_id}/evidence  
 body: { excerpt: string, location: string, note?: string, confidence: number }  
-response: { id, source_id, excerpt, location, note, confidence, created_at }  
+response: {id, source_id, excerpt, location, note, confidence, created_at, status: "pending", reviewed_by?,reviewed_at? } 
 errors: 404 source not found, 422 validation (пустой excerpt)  
   
 **Список evidence по source**  
 GET /sources/{source_id}/evidence  
-response: [{ id, excerpt, location, confidence, created_at }]  
+response: { items: [{ id, excerpt, location, confidence, created_at, status, reviewed_by?, reviewed_at? }] } 
 errors: 404 source not found  
   
 **Получить одно evidence**  
 GET /evidence/{evidence_id}  
-response: {id, source_id, excerpt, location, note, confidence, created_at }  
+response: { id, source_id, excerpt, location, note, confidence, created_at, status, reviewed_by?, reviewed_at? } 
 errors: 404   
   
+**Изменить статус evidence**
+PATCH /evidence/{evidence_id}
+body: { status: "approved" | "rejected" }
+response: { id, status, reviewed_by, reviewed_at }
+errors: 404 not found, 422 недопустимый переход
+
 ### Claims  
 **status:** draft | supported | weak | conflicting | outdated  
 
@@ -171,12 +183,13 @@ response: { id, workspace_id, research_task_id, text, status: "draft", confidenc
 errors: 404 task not found, 422 validation (пустой text)  
   
 **Список claims по research task**  
-GET /research-tasks/{task_id}/claims?status={status}response: [{ id, text, status, confidence, evidence_count }]  
+GET /research-tasks/{task_id}/claims?status={status} 
+response: { items: [{ id, text, status, confidence, evidence_count, review_note? }]}  
 errors: 404 task not found  
   
 **Получить один claim (с evidence)**  
 GET /claims/{claim_id}  
-response: { id, text, status, confidence, reviewed_by, evidence: [{ id, excerpt, source_title }], created_at, updated_at }  
+response: { id, text, status, confidence, reviewed_by, evidence: [{ id, excerpt, source_title }], created_at, updated_at, review_note? }  
 errors: 404 not found  
   
 **Связать claim с evidence**  
@@ -187,32 +200,32 @@ errors: 404 claim or evidence not found, 409 уже связаны, 422 evidence
   
 **Изменить статус claim (review)**  
 PATCH /claims/{claim_id}  
-body: { status: string }  
-response: { id, status, reviewed_by, updated_at }  
+body: { status: string, review_note?: string }  
+response: { id, status, reviewed_by, updated_at, review_note? }  
 errors: 404 not found, 409 нельзя перевести в supported без evidence, 422 недопустимый переход статуса  
   
 ### Decisions  
   
 **Создать decision**  
 POST /workspaces/{workspace_id}/decisions  
-body: { title: string, decision_text: string, rationale?: string, claim_ids?: string[] }  
-response: { id, workspace_id, title, decision_text, status: "proposed", rationale, decided_by, created_at }  
+body: { title: string, decision_text: string, rationale?: string, claim_ids?: string[], open_questions?: string[] }  
+response: { id, workspace_id, title, decision_text, status: "proposed", rationale, decided_by, created_at, confidence, open_questions? }  
 errors: 404 workspace not found, 422 один из claim_ids принадлежит другому workspace  
   
 **Список decisions в workspace**  
 GET /workspaces/{workspace_id}/decisions?status=  
-response: [{ id, title, status, decided_at, claims_count }]  
+response: { items: [{ id, title, status, decided_at, claims_count }]}  
 errors: 404 workspace not found  
   
 **Получить одно decision (с claims)**  
 GET /decisions/{decision_id}  
-response: { id, title, decision_text, status, rationale, decided_by, decided_at, claims: [{ id, text, status }], created_at, updated_at }  
+response: { id, title, decision_text, status, rationale, decided_by, decided_at, claims: [{ id, text, status }], created_at, updated_at, confidence, open_questions?, override_reason? }  
 errors: 404 not found  
   
 **Принять/изменить статус decision**  
 PATCH /decisions/{decision_id}  
-body: { status: string, override_reason?: string }  
-response: { id, status, decided_by, decided_at, updated_at }  
+body: { status: string, override_reason?: string, open_questions?: string[] }  
+response: { id, status, decided_by, decided_at, updated_at, confidence, override_reason? }  
 errors: 404 not found, 409 нельзя accepted без хотя бы одного reviewed claim (если нет override_reason), 422 недопустимый переход статуса  
   
 **Экспорт decision brief в Markdown**  
@@ -230,7 +243,7 @@ errors: 404 task not found, 422 validation (неверный mode), 429 слиш
   
 **Список research runs по task**  
 GET /research-tasks/{task_id}/research-runs  
-response: [{ id, status, mode, started_at, completed_at }]  
+response: { items: [{ id, status, mode, started_at, completed_at }]}  
 errors: 404 task not found  
   
 **Получить статус run**  
