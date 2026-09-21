@@ -226,11 +226,11 @@ complete" вместо карточек.
 сообщение "No evidence extracted yet from this source".
 
 #### State: Loading
-Идёт загрузка содержимого source (`raw_content_ref`) или конкретного evidence item — панель
+Идёт загрузка содержимого source (`Source.summary`) или конкретного evidence item — панель
 Source и панель Evidence Item показывают skeleton вместо текста.
 
 #### State: Error
-Не удалось загрузить содержимое source (недоступен `raw_content_ref` / битая ссылка) — вместо
+Не удалось загрузить содержимое source (`Source.summary` недоступен) — вместо
 превью показывается сообщение об ошибке; кнопка **Open original source** остаётся активной как
 fallback-путь для ручной проверки.
 

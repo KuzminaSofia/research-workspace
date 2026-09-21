@@ -2,7 +2,7 @@
 
 **Зачем:** дать frontend возможность собирать все 6 MVP-экранов до готовности backend, и сделать UI states (`Empty` / `Loading` / `Error` / `Success` / `Draft-review`) проверяемыми фикстурами, а не только описанными в Markdown.
 
-**Правило для этого документа:** ни один mock object не вводит новое domain-поле, новый enum-значение статуса или новое правило, которых нет в `04-domain-model.md`. Там, где UI показывает данные, не покрытые domain model (Decision confidence, Decision Open Questions, Claim review note, EvidenceItem review status), фикстура помечена как **UI-only mock, не контракт** — см. раздел "Поля вне domain model" в конце документа.
+**Правило для этого документа:** ни один mock object не вводит новое domain-поле, новый enum-значение статуса или новое правило, которых нет в `04-domain-model.md` или в подтверждённом backend contract из `ui-api-mapping.md` (F6). Decision confidence, Decision Open Questions, Claim review note и EvidenceItem review status уже подтверждены как backend contract в F6 (пока не синхронизированы с `04-domain-model.md`) и больше не считаются UI-only mock. Там, где UI всё ещё показывает данные, не подтверждённые ни domain model, ни F6, фикстура помечена как **UI-only mock, не контракт** — см. раздел "Поля вне domain model" в конце документа.
 
 ---
 
@@ -94,7 +94,7 @@ Source {
 | `sourceFixtures.pdf` | `pdf` | покрытие enum-значения `type` |
 | `sourceFixtures.githubRepo` | `github` | покрытие enum-значения `type` |
 | `sourceFixtures.manualNote` | `manual_note` | покрытие enum-значения `type` (без `url`/`author`, т.к. это заметка, а не внешний источник) |
-| `sourceFixtures.brokenContentRef` | `url` | `raw_content_ref` указывает на недоступный ресурс — для Source / Evidence Panel `Error` |
+| `sourceFixtures.brokenSummary` | `url` | `summary` недоступен (пустой/не загрузился) — для Source / Evidence Panel `Error`, т.к. превью строится на `Source.summary`, не на `raw_content_ref` (`ui-api-mapping.md`, F6) |
 
 `type: doc` и `type: video` не заведены отдельными фикстурами в этой версии — при необходимости добавляются по тому же шаблону, что `pdf`/`github`, без изменения shape.
 
@@ -118,7 +118,7 @@ EvidenceItem {
 | `evidenceItemFixtures.highConfidence` | `confidence` близко к верхней границе — проверка рендера pill'а |
 | `evidenceItemFixtures.lowConfidence` | `confidence` близко к нижней границе — проверка рендера pill'а |
 
-**Важно:** у `EvidenceItem` в domain model нет поля review-статуса. Ни одна из этих фикстур не содержит поля вроде `reviewStatus`/`approved` — см. Open Contract Question по Evidence review status в разделе "Поля вне domain model" ниже.
+**Важно:** review-статус `EvidenceItem` (`status`, `reviewed_by`, `reviewed_at`) в `04-domain-model.md` пока не описан, но по `ui-api-mapping.md` (F6) это уже backend contract, а не UI-only mock — см. раздел "Поля вне domain model" ниже.
 
 ### Claim
 
@@ -178,7 +178,7 @@ Decision {
 
 `decisionFixtures.superseded` существует как entity-level fixture (значение валидно в domain model), но **не подключается** ни к одному screen-level fixture'у ниже — это соответствует правке из `ui-api-mapping.md`: в Workspace Overview `Success` проверяются только `proposed`/`accepted`/`rejected`/`needs_review`.
 
-Поля `Decision.confidence` в domain model нет — фикстуры `Decision` этого поля не содержат (см. "Поля вне domain model").
+Поля `Decision.confidence` в `04-domain-model.md` пока нет, но по `ui-api-mapping.md` (F6) оно уже backend contract, ещё не синхронизированный с domain model.
 
 ### ResearchRun
 
@@ -247,9 +247,9 @@ ResearchRun {
 |---|---|---|
 | `sourceEvidencePanel.empty` | `sourceFixtures.url`, `evidence: []` | нет `EvidenceItem` для этого `Source` |
 | `sourceEvidencePanel.loading` | те же данные, не резолвлены (искусственная задержка) | — |
-| `sourceEvidencePanel.error` | `sourceFixtures.brokenContentRef` | `raw_content_ref` недоступен |
+| `sourceEvidencePanel.error` | `sourceFixtures.brokenSummary` | `Source.summary` недоступен |
 | `sourceEvidencePanel.success` | `sourceFixtures.url`, `evidenceItemFixtures.default`, связанный `claimFixtures.supported` | полностью заполненная карточка |
-| `sourceEvidencePanel.draftReview` | тот же состав, что `success`; Approve/Reject/Edit доступны, но их результат — только локальное UI-состояние (no-op), т.к. review-статуса у `EvidenceItem` в domain model нет | см. "Поля вне domain model" |
+| `sourceEvidencePanel.draftReview` | тот же состав, что `success`; Approve/Reject/Edit меняют `EvidenceItem.status`/`reviewed_by`/`reviewed_at` — backend contract по `ui-api-mapping.md` (F6) | см. раздел "Поля вне domain model" |
 
 ### `claimReviewPanel` (Chunk 4)
 
@@ -289,7 +289,7 @@ ResearchRun {
 | `followUpQuestionArea.success` | `answerText`, ссылки заполнены, `memorySufficient: true`, ненулевые счётчики | `Memory sufficient? = Yes` |
 | `followUpQuestionArea.draftReview` | `answerText`, `memorySufficient: false` | `Memory sufficient? = No`, показан `Create Follow-up Task` |
 
-**Важно:** `answerText`, счётчики и `memorySufficient` — это UI-only mock-поля без entity в domain model (см. Open Contract Question №8 в `ui-api-mapping.md`); их shape зафиксирован только для целей этого fixture-контракта и не должен переноситься в `packages/contracts` как согласованный API response, пока backend/API contract не опубликован.
+**Важно:** `answerText`, счётчики и `memorySufficient` подтверждены как backend contract в `POST /workspaces/{workspace_id}/ask` (`ui-api-mapping.md`, F6: `answer_text`, `sources_count`, `claims_count`, `decisions_count`, `memory_sufficient`) — это больше не UI-only mock, хотя как entity в `04-domain-model.md` они не описаны.
 
 ---
 
@@ -301,9 +301,7 @@ ResearchRun {
 | `claimFixtures.supported*` всегда имеет ≥1 связанный `EvidenceItem` | ✅ соблюдает правило "Claim без evidence не может быть supported" |
 | Ни у одной `claimFixtures.*`, созданной "агентом" (т.е. использованной в `Draft-review`/`Empty` состояниях до review), `status` не установлен в отличное от `draft` значение по умолчанию | ✅ соблюдает правило "AI-generated claim стартует как draft" |
 | `decisionFixtures.needsReview` использует `claimFixtures.draft` среди Linked Claims, но не задаёт логику, при каком составе Accept разблокируется | ✅ соответствует статусу открытого вопроса — критерий "reviewed claims" не решён, фикстура его не решает за backend |
-| `EvidenceItem`-фикстуры не содержат поля вроде `reviewStatus`/`approved`/`reviewedBy` | ✅ у `EvidenceItem` таких полей в domain model нет |
-| `Claim`-фикстуры не содержат поля `reviewNote`/`review_note` | ✅ такого поля у `Claim` в domain model нет |
-| `Decision`-фикстуры не содержат поля `confidence` или `openQuestions` | ✅ таких полей у `Decision` в domain model нет |
+| `EvidenceItem.status`/`reviewed_by`/`reviewed_at`, `Claim.review_note`, `Decision.confidence`/`open_questions` | ✅ подтверждены как backend contract в `ui-api-mapping.md` (F6); в `04-domain-model.md` пока не синхронизированы |
 | `decisionFixtures.superseded` существует, но не используется в screen-level `success`/`draftReview` | ✅ соответствует правке F6: `superseded` вне MVP UI scope |
 | `researchRunFixtures.*` используют только `mode: manual_sources` | ✅ единственный режим в MVP-скоупе, `search_assisted` оставлен как open question |
 
@@ -311,17 +309,14 @@ ResearchRun {
 
 ## 4. Поля вне domain model (UI-only mock, не контракт)
 
-Эти значения нужны экранам, но не существуют как поля в `04-domain-model.md`. Они замоканы отдельно от entity-shape'ов из раздела 1, чтобы не создавать у backend/frontend впечатление, что это уже согласованный API-контракт. Полный список открытых вопросов — в `docs/fullstack/ui-api-mapping.md`, здесь только то, что затрагивает fixtures:
+Эти значения нужны экранам, но пока не подтверждены ни в `04-domain-model.md`, ни как backend contract в `ui-api-mapping.md` (F6). Они замоканы отдельно от entity-shape'ов из раздела 1, чтобы не создавать у backend/frontend впечатление, что это уже согласованный API-контракт. Полный список открытых вопросов — в `docs/fullstack/ui-api-mapping.md`, здесь только то, что затрагивает fixtures.
+
+Evidence review result, `Decision confidence`/`Open Questions`, `Claim` review note и данные `/ask` из этой таблицы убраны: по F6 это уже backend contract, а не UI-only mock (см. примечания к соответствующим entity-level и screen-level fixtures в разделах 1–2 выше).
 
 | UI-only mock значение | Экран | Соответствующий Open Contract Question |
 |---|---|---|
-| Approve/Reject/Edit результат для `EvidenceItem` (локальный UI-стейт, не персистится) | Source / Evidence Panel | №1 (Review status для `EvidenceItem`) |
-| `Decision confidence` (число в Decision Brief) | Decision Page | №2 (Источник `Decision confidence`) |
 | Семантика `Send to Review` (mock — no-op с toast) | Decision Page | №3 |
 | Критерий разблокировки `Accept` для `needs_review` (mock не решает, кнопка остаётся с пояснительным текстом) | Decision Page | №4 |
-| `review note` у `Claim` (хранится только в локальном состоянии формы в рамках mock-слоя) | Claim Review Panel | №6 |
-| `Open Questions` текст у `Decision` | Decision Page | №7 |
-| `answerText`, `sourcesCount`/`claimsCount`/`decisionsCount`, `memorySufficient` | Follow-up Question Area | №8 (Ask/Answer contract) |
 | `reviewed_by`/`decided_by`/`created_by` отображаются как готовые display-имена (например, "Alex Ivanov") вместо резолва по ID | Claim Review Panel, Decision Page | №9 (нет сущности `User`) |
 | `Decision.status = superseded` | — (не подключён ни к одному screen fixture) | №10 |
 
