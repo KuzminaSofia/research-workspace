@@ -1,13 +1,31 @@
 # B1 - Границы В DocForge
 
 ## Слои
+
+Имена слоёв ниже взяты из DocForge. В нашем проекте им соответствуют `domain/`, `application/`, `infrastructure/` и `api/` из `docs/architecture/02-system-architecture.md`.
+
  1. domain/ (laws layer)
-    - domain/ содержит business entities, инварианты и domain rules и policies, которые не зависят от http, бд, queue и инфраструктуры. Например: claim нельзя пометить подтверждённым, если у него нет ни одного источника. Это правило истинно всегда и неважно, хранятся ли данные в Postgres или в файле на диске.
+    - `domain/` содержит бизнес-понятия и правила, которые остаются истинными независимо от HTTP, базы данных, очередей и внешних сервисов. В domain нет импортов FastAPI, SQLAlchemy, queue-клиентов или storage-адаптеров. Domain не описывает, как другие слои вызывают друг друга; он фиксирует, какое состояние бизнес-объекта считается корректным.
+    - Состав domain:
+        - **business entities**: `Workspace`, `ResearchTask`, `Source`, `EvidenceItem`, `Claim`, `Decision`, `ResearchRun`, `Update`;
+        - **invariants**: условия, которые обязаны выполняться в любом допустимом состоянии. Например: `supported` claim не существует без хотя бы одной evidence и human review; `accepted` decision имеет reviewed claim или explicit human override; связанные Claim/Evidence/Decision не выходят за пределы одного workspace/research task; agent draft не считается accepted knowledge;
+        - **domain rules**: правила жизненного цикла и переходов. Например: claim проходит `draft -> supported | weak | conflicting | outdated`; decision проходит `proposed -> accepted | rejected | needs_review | superseded`; `outdated` claim даёт review signal для связанных decisions, но не меняет их статус автоматически;
+        - **policies**: именованные проверки, которые применяют domain rules к конкретному сценарию: `ClaimReviewPolicy`, `DecisionAcceptancePolicy`, `ScopeIntegrityPolicy`, `ResearchTaskLifecyclePolicy`, `ResearchRunLifecyclePolicy`, `EvidenceReviewPolicy`, `AgentBoundaryPolicy`.
+    - Пример: claim нельзя пометить `supported`, если у него нет ни одной evidence или он не прошёл human review. Это правило истинно и для Postgres, и для файла на диске, и для in-memory repository в тестах.
  2. services/ (application layer)
     - Координирует сценарии использования (use cases): в каком порядке вызывать правила (из domain), обращаться к базе данных, публиковать сообщения в очередь. Три основные подгруппы:
         - use-case сервисы (auth_service, prediction_submission_service) описывают весь сценарий от начала до конца.
         - mappers (ИЗ файла mappers.py) представляет классы (например, User) в 3 разных видах (формах), в зависимости от того, в каком слое кода мы сейчас находимся.
-        - reconciler периодически опрашивает записи со статусом pending из таблицы remote job flow. Если в ответе результат готов, то сохраняет результат и переводит задачу в succeedd/failed, иначе оставляем pending. Завершённой задачей считается момент, когда статус job перешёл в succeeded или failed. Для нашего проекта ResearchRun переходит queued -> running -> состояние процесса
+        - reconciler - application-компонент, который доводит remote job до terminal state. Он не содержит domain rules, а оркестрирует вызовы:
+            1. Получает из repository пачку remote job записей в статусе `pending` (`job_id`, `run_id`, `external_job_id`, `attempt`, `idempotency_key`).
+            2. Для каждой записи запрашивает состояние у внешнего сервиса (agent-service/ML-service) и проверяет: job ещё выполняется, завершилась успешно, завершилась ошибкой или отменена; есть ли готовый artifact/result.
+            3. Если job ещё выполняется - оставляет `pending` и планирует следующий poll с backoff, ничего не записывая в product state.
+            4. Если job `succeeded` - идемпотентно сохраняет artifact и draft-results (sources/evidence/draft claims) через use case, помечает remote job как `succeeded` и переводит `ResearchRun` в `review_required`. Draft сохраняется, но не становится accepted knowledge.
+            5. Если job `failed` - сохраняет `error_message`, помечает job как `failed` и переводит `ResearchRun` в `failed`.
+            6. Если job `cancelled` - помечает job как `cancelled` и переводит `ResearchRun` в `cancelled`.
+            7. Считает job завершённой только после перехода в terminal state: `succeeded`, `failed` или `cancelled`. Повторный poll terminal job не выполняет.
+            8. Все записи по одной job выполняет в одной Unit of Work; повторная обработка защищена `idempotency_key`.
+        - Для нашего проекта полный жизненный цикл `ResearchRun`: `queued -> running -> (review_required | failed | cancelled)`. `review_required` означает, что агент закончил и draft-results сохранены, но человек ещё не проверил их. `completed` выставляется после завершения human review, а не в момент ответа агента.
  3. api/ (http layer)
     - Принимает HTTP-запрос, вызывает нужный use case из services/, оформляет ответ в JSON. Так же есть поддержка ошибок, например, InsufficientBalanceError.
  4. db/ (database layer)
@@ -61,6 +79,7 @@
 | ------------ | :----: | ---------------------------------------------------------------------- |
 | ResearchTask | status | draft, in_progress, review, completed, archived                        |
 | Source       |  type  | url, manual_note, pdf, doc, github, video                              |
+| EvidenceItem | status | pending, approved, rejected                                            |
 | Claim        | status | draft, supported, weak, conflicting, outdated                          |
 | Decision     | status | proposed, accepted, rejected, superseded, needs_review                 |
 | ResearchRun  | status | queued, running, review_required, completed, failed, cancelled         |
@@ -68,6 +87,48 @@
 | Update       |  type  | source_changed, new_source, claim_review, decision_review, manual_note |
 
 # B3 - Черновик API Contracts
+
+## Enums
+
+Имена enum используются в request/response и в query-параметрах. Allowed values совпадают с B2.
+
+| Enum | Allowed values |
+| --- | --- |
+| `ResearchTaskStatus` | `draft`, `in_progress`, `review`, `completed`, `archived` |
+| `SourceType` | `url`, `manual_note`, `pdf`, `doc`, `github`, `video` |
+| `EvidenceReviewStatus` | `pending`, `approved`, `rejected` |
+| `ClaimStatus` | `draft`, `supported`, `weak`, `conflicting`, `outdated` |
+| `DecisionStatus` | `proposed`, `accepted`, `rejected`, `superseded`, `needs_review` |
+| `ResearchRunStatus` | `queued`, `running`, `review_required`, `completed`, `failed`, `cancelled` |
+| `ResearchRunMode` | `manual_sources`, `search_assisted`, `follow_up` |
+| `UpdateType` | `source_changed`, `new_source`, `claim_review`, `decision_review`, `manual_note` |
+
+`EvidenceReviewStatus` формализует уже существовавшие в B3 значения `pending/approved/rejected` для review-состояния EvidenceItem.
+
+## Collection Envelope
+
+Все list endpoints возвращают коллекцию в едином envelope:
+
+```json
+{ "items": [] }
+```
+
+Пустой список - это `{ "items": [] }`, а не `null` и не отсутствие поля.
+
+## Actor Fields
+
+Клиент никогда не передаёт `created_by`, `reviewed_by`, `decided_by`, `started_by` и `owner_id` в request body. Backend получает actor из authenticated user context (Bearer token) и сам заполняет эти поля в response. Если клиент передал actor-поле в body, API возвращает `422 unknown_actor_field` (request schema работает с `extra=forbid`).
+
+## Scope Integrity
+
+Все связи проверяются на backend до записи. Если сущность не существует - `404 not_found`; если существует, но принадлежит другому workspace/research task - `422 scope_mismatch`.
+
+| Связь | Проверка | Ошибка |
+| --- | --- | --- |
+| Evidence -> Source | `evidence.source_id` указывает на source из path | `404 not_found` |
+| Claim -> Evidence | `evidence.source.research_task_id == claim.research_task_id` и `workspace_id` совпадают | `422 scope_mismatch` |
+| Decision -> Claim | `claim.workspace_id == decision.workspace_id` | `422 scope_mismatch` |
+| Decision -> ResearchTask | `research_task.workspace_id == decision.workspace_id` | `422 scope_mismatch` |
 
 ### Workspaces
 
@@ -98,7 +159,7 @@ errors: 404 not found, 422 validation
 **Задать вопрос по workspace**  
 POST /workspaces/{workspace_id}/ask  
 body: { question: string }  
-response: { answer_text, sources_count, claims_count, decisions_count, memory_sufficient, evidence_link, claims_link, sources_link }  
+response: { answer_text, sources_count, claims_count, decisions_count, memory_sufficient, evidence_link: "/api/v1/workspaces/{workspace_id}/evidence", claims_link: "/api/v1/workspaces/{workspace_id}/claims", sources_link: "/api/v1/workspaces/{workspace_id}/sources" }  
 errors: 404 workspace not found, 502 memory unavailable  
 
 ### Research Tasks  
@@ -106,32 +167,32 @@ errors: 404 workspace not found, 502 memory unavailable
 **Создать research task**  
 POST /workspaces/{workspace_id}/research-tasks  
 body: { title: string, research_question: string }  
-response: { id, workspace_id, title, research_question, status: "draft", created_by, created_at }  
+response: { id, workspace_id, title, research_question, status: ResearchTaskStatus, created_by, created_at }  
 errors: 404 workspace not found, 422 validation  
   
 **Список research tasks в workspace**  
-GET /workspaces/{workspace_id}/research-tasks?status=  
+GET /workspaces/{workspace_id}/research-tasks?status=ResearchTaskStatus  
 response: { items: [{ id, title, status, summary, created_at }]}
 errors: 404 workspace not found  
   
 **Получить одну research task**  
 GET /research-tasks/{task_id}  
-response: { id, workspace_id, title, research_question, status, summary, created_by, created_at, updated_at }  
+response: { id, workspace_id, title, research_question, status: ResearchTaskStatus, summary, created_by, created_at, updated_at }  
 errors: 404  
   
 **Изменить статус**  
 PATCH /research-tasks/{task_id}  
-body: { status?: string, summary?: string }  
-response: { id, status, summary, updated_at }  
-errors: 404, 409 invalid status transition, 422  
+body: { status?: ResearchTaskStatus, summary?: string }  
+response: { id, status: ResearchTaskStatus, summary, updated_at }  
+errors: 404 not found, 409 invalid_transition, 422 validation  
   
 ### Sources  
   
 **Добавить source**  
 POST /research-tasks/{task_id}/sources  
-body: { type: string, title: string, url?: string, author?: string, published_at?: datetime, summary?: string }  
-response: { id, workspace_id, research_task_id, type, title, url, summary, captured_at }  
-errors: 404 task not found, 422 validation (неверный type)  
+body: { type: SourceType, title: string, url?: string, author?: string, published_at?: datetime, summary?: string }  
+response: { id, workspace_id, research_task_id, type: SourceType, title, url, summary, captured_at }  
+errors: 404 task not found, 422 validation (неверный SourceType; для url/github/video обязателен url)  
   
 **Импорт source из URL**  
 POST /research-tasks/{task_id}/sources/import  
@@ -146,115 +207,150 @@ errors: 404
   
 **Получить один source**  
 GET /sources/{source_id}  
-response: { id, workspace_id, research_task_id, type, title, url, author, published_at, captured_at, summary, reliability_note }  
+response: { id, workspace_id, research_task_id, type: SourceType, title, url, author, published_at, captured_at, summary, reliability_note }  
 errors: 404  
+
+**Список sources в workspace**  
+GET /workspaces/{workspace_id}/sources?type=SourceType&research_task_id=uuid  
+response: { items: [{ id, research_task_id, type: SourceType, title, url, summary, reliability_note }]}  
+errors: 404 workspace not found, 422 validation (неизвестный SourceType)  
   
 ### Evidence  
   
 **Добавить evidence к source**  
 POST /sources/{source_id}/evidence  
 body: { excerpt: string, location: string, note?: string, confidence: number }  
-response: {id, source_id, excerpt, location, note, confidence, created_at, status: "pending", reviewed_by?,reviewed_at? } 
+response: { id, source_id, excerpt, location, note, confidence, created_at, status: EvidenceReviewStatus, reviewed_by?, reviewed_at? }  
 errors: 404 source not found, 422 validation (пустой excerpt)  
   
 **Список evidence по source**  
 GET /sources/{source_id}/evidence  
-response: { items: [{ id, excerpt, location, confidence, created_at, status, reviewed_by?, reviewed_at? }] } 
+response: { items: [{ id, excerpt, location, confidence, created_at, status: EvidenceReviewStatus, reviewed_by?, reviewed_at? }] } 
 errors: 404 source not found  
   
 **Получить одно evidence**  
 GET /evidence/{evidence_id}  
-response: { id, source_id, excerpt, location, note, confidence, created_at, status, reviewed_by?, reviewed_at? } 
+response: { id, source_id, excerpt, location, note, confidence, created_at, status: EvidenceReviewStatus, reviewed_by?, reviewed_at? } 
 errors: 404   
+
+**Список evidence в workspace**  
+GET /workspaces/{workspace_id}/evidence?status=EvidenceReviewStatus&research_task_id=uuid  
+response: { items: [{ id, source_id, excerpt, location, confidence, status: EvidenceReviewStatus, reviewed_by?, reviewed_at? }]}  
+errors: 404 workspace not found, 422 validation (неизвестный EvidenceReviewStatus)  
   
-**Изменить статус evidence**
+**Изменить статус evidence (review)**
 PATCH /evidence/{evidence_id}
-body: { status: "approved" | "rejected" }
-response: { id, status, reviewed_by, reviewed_at }
-errors: 404 not found, 422 недопустимый переход
+body: { status: EvidenceReviewStatus }
+response: { id, status: EvidenceReviewStatus, reviewed_by, reviewed_at }
+errors: 404 not found, 409 invalid_transition (review возможен только из pending), 422 validation (allowed: approved, rejected)
 
 ### Claims  
-**status:** draft | supported | weak | conflicting | outdated  
+**status:** `ClaimStatus` (`draft` | `supported` | `weak` | `conflicting` | `outdated`)  
+**confidence:** read-only; при ручном создании claim через API равен `null`, agent draft может заполнить значение.  
 
 **Создать claim**  
 POST /research-tasks/{task_id}/claims  
 body: { text: string }  
-response: { id, workspace_id, research_task_id, text, status: "draft", confidence, created_by, created_at }  
+response: { id, workspace_id, research_task_id, text, status: ClaimStatus, confidence, created_by, created_at }  
 errors: 404 task not found, 422 validation (пустой text)  
   
 **Список claims по research task**  
-GET /research-tasks/{task_id}/claims?status={status} 
-response: { items: [{ id, text, status, confidence, evidence_count, review_note? }]}  
-errors: 404 task not found  
+GET /research-tasks/{task_id}/claims?status=ClaimStatus
+response: { items: [{ id, text, status: ClaimStatus, confidence, evidence_count, review_note? }]}  
+errors: 404 task not found, 422 validation (неизвестный ClaimStatus)  
+
+**Список claims в workspace**  
+GET /workspaces/{workspace_id}/claims?status=ClaimStatus&research_task_id=uuid  
+response: { items: [{ id, research_task_id, text, status: ClaimStatus, confidence, evidence_count, review_note? }]}  
+errors: 404 workspace not found, 422 validation (неизвестный ClaimStatus)  
   
 **Получить один claim (с evidence)**  
 GET /claims/{claim_id}  
-response: { id, text, status, confidence, reviewed_by, evidence: [{ id, excerpt, source_title }], created_at, updated_at, review_note? }  
+response: { id, text, status: ClaimStatus, confidence, reviewed_by, evidence: [{ id, excerpt, source_id, source_title, confidence }], created_at, updated_at, review_note? }  
 errors: 404 not found  
   
 **Связать claim с evidence**  
 POST /claims/{claim_id}/evidence  
 body: { evidence_id: string }  
 response: { claim_id, evidence_id, created_at }  
-errors: 404 claim or evidence not found, 409 уже связаны, 422 evidence принадлежит другому research task/workspace
+errors: 404 claim or evidence not found, 409 already_linked, 422 scope_mismatch (evidence принадлежит другому research task/workspace)
+
+**Отвязать evidence от claim**
+DELETE /claims/{claim_id}/evidence/{evidence_id}
+response: 204 No Content
+errors: 404 not found, 409 нельзя отвязать последнюю evidence у supported claim
   
 **Изменить статус claim (review)**  
 PATCH /claims/{claim_id}  
-body: { status: string, review_note?: string }  
-response: { id, status, reviewed_by, updated_at, review_note? }  
-errors: 404 not found, 409 нельзя перевести в supported без evidence, 422 недопустимый переход статуса  
+body: { status: ClaimStatus, review_note?: string }  
+response: { id, status: ClaimStatus, reviewed_by, updated_at, review_note? }  
+errors: 404 not found, 409 evidence_required (supported без evidence), 409 invalid_transition, 422 validation (неизвестный ClaimStatus)  
   
 ### Decisions  
   
+**confidence:** read-only агрегированное значение; в v1 возвращается `null`, пока правило агрегации не зафиксировано в `api-contract-v1.md` (OQ-2).  
+  
 **Создать decision**  
 POST /workspaces/{workspace_id}/decisions  
-body: { title: string, decision_text: string, rationale?: string, claim_ids?: string[], open_questions?: string[] }  
-response: { id, workspace_id, title, decision_text, status: "proposed", rationale, decided_by, created_at, confidence, open_questions? }  
-errors: 404 workspace not found, 422 один из claim_ids принадлежит другому workspace  
+body: { title: string, decision_text: string, rationale?: string, claim_ids?: string[], research_task_ids?: string[], open_questions?: string[] }  
+response: { id, workspace_id, title, decision_text, status: DecisionStatus, rationale, decided_by, created_at, confidence, open_questions?, research_task_ids? }  
+errors: 404 workspace not found, 422 scope_mismatch (claim или research task принадлежит другому workspace), 422 validation  
   
 **Список decisions в workspace**  
-GET /workspaces/{workspace_id}/decisions?status=  
-response: { items: [{ id, title, status, decided_at, claims_count }]}  
-errors: 404 workspace not found  
+GET /workspaces/{workspace_id}/decisions?status=DecisionStatus  
+response: { items: [{ id, title, status: DecisionStatus, decided_at, claims_count, research_tasks_count }]}  
+errors: 404 workspace not found, 422 validation (неизвестный DecisionStatus)  
   
 **Получить одно decision (с claims)**  
 GET /decisions/{decision_id}  
-response: { id, title, decision_text, status, rationale, decided_by, decided_at, claims: [{ id, text, status }], created_at, updated_at, confidence, open_questions?, override_reason? }  
+response: { id, title, decision_text, status: DecisionStatus, rationale, decided_by, decided_at, claims: [{ id, text, status: ClaimStatus, reviewed_by? }], research_task_ids: string[], created_at, updated_at, confidence, open_questions?, override_reason? }  
 errors: 404 not found  
   
 **Принять/изменить статус decision**  
 PATCH /decisions/{decision_id}  
-body: { status: string, override_reason?: string, open_questions?: string[] }  
-response: { id, status, decided_by, decided_at, updated_at, confidence, override_reason? }  
-errors: 404 not found, 409 нельзя accepted без хотя бы одного reviewed claim (если нет override_reason), 422 недопустимый переход статуса  
+body: { status: DecisionStatus, override_reason?: string, open_questions?: string[] }  
+response: { id, status: DecisionStatus, decided_by, decided_at, updated_at, confidence, override_reason? }  
+errors: 404 not found, 409 reviewed_claim_required (accepted без reviewed claim и без override_reason), 409 invalid_transition, 422 validation (неизвестный DecisionStatus)  
   
 **Экспорт decision brief в Markdown**  
 GET /decisions/{decision_id}/export  
 response: text/markdown (файл )  
 errors: 404  
+
+**Связать decision с claim**
+POST /decisions/{decision_id}/claims
+body: { claim_id: string }
+response: { decision_id, claim_id, created_at }
+errors: 404 not found, 409 already_linked, 422 scope_mismatch
+
+**Связать decision с research task**
+POST /decisions/{decision_id}/research-tasks
+body: { research_task_id: string }
+response: { decision_id, research_task_id, created_at }
+errors: 404 not found, 409 already_linked, 422 scope_mismatch
   
 ### Research Runs  
   
 **Запустить research run**  
 POST /research-tasks/{task_id}/research-runs  
-body: { question: string, mode: string }  
-response: { id, workspace_id, research_task_id, question, status: "queued", mode, started_by, started_at }  
-errors: 404 task not found, 422 validation (неверный mode), 429 слишком много активных runs  
+body: { question: string, mode: ResearchRunMode }  
+response: { id, workspace_id, research_task_id, question, status: ResearchRunStatus, mode: ResearchRunMode, started_by, started_at }  
+errors: 404 task not found, 422 validation (неверный ResearchRunMode), 429 too_many_active_runs  
   
 **Список research runs по task**  
 GET /research-tasks/{task_id}/research-runs  
-response: { items: [{ id, status, mode, started_at, completed_at }]}  
+response: { items: [{ id, status: ResearchRunStatus, mode: ResearchRunMode, started_at, completed_at, error_message }]}  
 errors: 404 task not found  
   
 **Получить статус run**  
 GET /research-runs/{run_id}  
-response: { id, status, mode, artifact_manifest_ref, started_at, completed_at, error_message }  
+response: { id, status: ResearchRunStatus, mode: ResearchRunMode, artifact_manifest_ref, started_at, completed_at, error_message }  
 errors: 404 not found  
   
 **Отменить run**  
 POST /research-runs/{run_id}/cancel  
-response: { id, status: "cancelled", completed_at }  
-errors: 404 not found, 409 run уже завершён/нельзя отменить  
+response: { id, status: ResearchRunStatus, completed_at }  
+errors: 404 not found, 409 run_terminal  
 
 # B4 - Domain Rules
 1. Claim может в статус supported если:
@@ -269,3 +365,18 @@ errors: 404 not found, 409 run уже завершён/нельзя отмени
    3. создаётся соответствующая запись в таблице апдейтов, чтобы сохранить историю
 4. Что означает agent-generated draft:
    1. это данные (sources, evidence, claims), которые backend получает от agent-service как draft-results. Backend сохраняет их со статусом draft/unreviewed, после чего ResearchRun переходит в review_required. draft данные хранятся в системе, но не считаются подтверждённым знанием команды (accepted knowledge) до прохождения review человеком.
+
+> Примечание: точный критерий `reviewed claim` (наличие `reviewed_by`/`reviewed_at` или отдельный `review_status`) фиксируется в `docs/backend/api-contract-v1.md`. В B4 не вводится эквивалентность `reviewed claim == status != draft`.
+
+# B5 - Summary Изменений
+
+- `domain` переписан через business entities, invariants, domain rules и policies; явно зафиксировано, что domain не зависит от HTTP, БД, queue и storage.
+- `reconciler` описан как конкретный remote job flow: получение `pending`, проверка внешнего статуса, идемпотентное сохранение результата, обновление job и `ResearchRun`, terminal states и retry/backoff.
+- Все list endpoints используют единый envelope `{ items: [...] }`.
+- В B3 добавлены именованные enums и allowed values; `string` в status/type/mode и query-параметрах заменён на `ResearchTaskStatus`, `SourceType`, `EvidenceReviewStatus`, `ClaimStatus`, `DecisionStatus`, `ResearchRunStatus`, `ResearchRunMode`.
+- Actor fields (`created_by`, `reviewed_by`, `decided_by`, `started_by`, `owner_id`) не принимаются в request body; backend берёт их из authenticated context.
+- Добавлен единый раздел Scope Integrity для связей Evidence -> Source, Claim -> Evidence, Decision -> Claim, Decision -> ResearchTask.
+- Создание decision не требует claim_ids: `claim_ids?` остаётся опциональным, ограничение действует только для перехода в `accepted`.
+- B4 исправлен: accepted decision требует reviewed claim или explicit human override; outdated claim даёт review signal/candidate, а не автоматическую смену статуса decision; agent draft сохраняется как draft/unreviewed и не считается accepted knowledge.
+- Добавлены endpoints для связи Decision -> Claim и Decision -> ResearchTask, а также отвязки Evidence от Claim.
+- `ResearchRun` использует `started_at`/`completed_at` без добавления `created_at`.
